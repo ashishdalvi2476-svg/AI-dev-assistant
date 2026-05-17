@@ -57,6 +57,7 @@ def _python_debug_issues(code: str) -> list[DebugIssue]:
 
     input_vars: set[str] = set()
     list_lengths: dict[str, int] = {}
+    sequence_lengths: dict[str, int] = {}
     range_limits: dict[str, int] = {}
     variable_kinds: dict[str, str] = {}
     divide_param_index: dict[str, int] = {}
@@ -71,6 +72,7 @@ def _python_debug_issues(code: str) -> list[DebugIssue]:
             elif isinstance(value, ast.Constant):
                 if isinstance(value.value, str):
                     variable_kinds[target] = "str"
+                    sequence_lengths[target] = len(value.value)
                 elif isinstance(value.value, (int, float, complex)):
                     variable_kinds[target] = "number"
             elif isinstance(value, ast.Call):
@@ -78,6 +80,7 @@ def _python_debug_issues(code: str) -> list[DebugIssue]:
 
             if isinstance(value, (ast.List, ast.Tuple)):
                 list_lengths[target] = len(value.elts)
+                sequence_lengths[target] = len(value.elts)
 
         if isinstance(node, ast.For) and isinstance(node.target, ast.Name):
             iter_node = node.iter
@@ -136,6 +139,26 @@ def _python_debug_issues(code: str) -> list[DebugIssue]:
                     "error",
                 )
 
+        if (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.value, ast.Name)
+            and node.value.id in sequence_lengths
+            and isinstance(node.slice, ast.Constant)
+            and isinstance(node.slice.value, int)
+        ):
+            index = node.slice.value
+            sequence_len = sequence_lengths[node.value.id]
+            if index >= sequence_len or index < -sequence_len:
+                _append_issue(
+                    issues,
+                    seen,
+                    "Index Error Risk",
+                    node.lineno,
+                    f"Index {index} is out of range for '{node.value.id}' with {sequence_len} item(s).",
+                    "Use an index within the sequence bounds or check the length before indexing.",
+                    "error",
+                )
+
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in divide_param_index:
             idx = divide_param_index[node.func.id]
             if idx < len(node.args):
@@ -153,6 +176,19 @@ def _python_debug_issues(code: str) -> list[DebugIssue]:
 
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
             left_is_str = isinstance(node.left, ast.Constant) and isinstance(node.left.value, str)
+            right_is_str = isinstance(node.right, ast.Constant) and isinstance(node.right.value, str)
+            left_is_number = isinstance(node.left, ast.Constant) and isinstance(node.left.value, (int, float, complex))
+            right_is_number = isinstance(node.right, ast.Constant) and isinstance(node.right.value, (int, float, complex))
+            if (left_is_str and right_is_number) or (left_is_number and right_is_str):
+                _append_issue(
+                    issues,
+                    seen,
+                    "Type Error Risk",
+                    node.lineno,
+                    "String concatenation mixes a string with a number.",
+                    "Convert the number with str(...) or use an f-string.",
+                    "warning",
+                )
             if left_is_str and isinstance(node.right, ast.Name):
                 kind = variable_kinds.get(node.right.id)
                 if kind != "str":
